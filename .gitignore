@@ -1,0 +1,8 @@
+data/
+*.csv
+*.joblib
+*.task
+confusion_matrix_svm.png
+__pycache__/
+.venv/
+venv/

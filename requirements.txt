@@ -1,0 +1,8 @@
+mediapipe>=0.10.30
+opencv-python
+numpy
+pandas
+scikit-learn
+matplotlib
+joblib
+pyttsx3
