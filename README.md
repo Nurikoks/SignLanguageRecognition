@@ -1,7 +1,8 @@
 # SignVision
 
 Recognizes 24 static ASL letters (A to Y without J and Z) from 21 MediaPipe hand landmarks
-using SVM and Random Forest.
+using SVM and Random Forest. Works with one or two hands at the same time, can learn your
+own word gestures with movement, and has a 6-7 easter egg.
 
 ## Setup
 1. `pip install -r requirements.txt`
@@ -20,8 +21,34 @@ python webcam_demo.py
 ```
 `--per-class 500` makes extraction fast for a first try. Remove it to use all 3,000 images per letter.
 
+## Words (gestures with movement)
+There is no word dataset, so you record your own examples (about 20 per word):
+```
+python record_words.py HELLO --count 20
+python record_words.py THANKS --count 20
+python record_words.py nothing --count 20
+python train_words.py
+python webcam_demo.py
+```
+In the recorder press SPACE, wait for the countdown and make the gesture while the frame is red
+(2 s). `nothing` is optional: random moves that are not a word, so the demo makes fewer mistakes.
+Use Latin letters for word names (OpenCV cannot draw other letters).
+In the demo press M to switch between letters and words.
+
+## 6-7
+Put a photo named `friend.jpg` in this folder (or use `--friend path/to/photo.jpg`).
+Hold both hands palms up and move them up and down in turns (one up, the other down):
+the photo appears for 3 seconds. Works in both modes, no training needed.
+
+## Demo keys
+M switch letters / words, SPACE add a space, BACKSPACE delete, C clear text, Q or Esc quit.
+
 ## Files
 - `features.py` MediaPipe landmark extraction and normalization (shared by all scripts)
 - `extract_features.py` images to `train.csv` / `test.csv` (63 features + label)
 - `train.py` trains SVM and Random Forest, prints metrics, saves `model.joblib` and a confusion matrix
-- `webcam_demo.py` live demo: hold a sign for about 1.5 s, the letter is shown and spoken
+- `webcam_demo.py` live demo: hold a sign for about 1.5 s (each hand on its own), the letter is
+  shown and spoken; words mode; 6-7
+- `gestures.py` features for movement gestures with two hands, and the 6-7 detector
+- `record_words.py` records word examples with the webcam to `data/words/<WORD>/`
+- `train_words.py` trains SVM and Random Forest on the words (cross-validation), saves `words_model.joblib`

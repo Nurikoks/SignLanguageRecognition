@@ -6,3 +6,4 @@ confusion_matrix_svm.png
 __pycache__/
 .venv/
 venv/
+friend.*
