@@ -9,6 +9,7 @@ Keys: M switch mode, SPACE add a space, BACKSPACE delete, C clear text, Q or Esc
 Usage:
   python webcam_demo.py
   python webcam_demo.py --friend friend.jpg
+  python webcam_demo.py --width 1280 --height 720 --fps 60   (if your camera can do it)
 """
 import argparse
 import queue
@@ -21,6 +22,7 @@ import cv2
 import joblib
 import numpy as np
 
+from camera import FpsCounter, add_camera_args, open_camera, open_window
 from features import (HAND_COLORS, SIDES, HandTracker, create_detector, detect_hands, draw_hand,
                       normalize)
 from gestures import (NOTHING, RECORD_SECONDS, SIX_SEVEN_SECONDS, WORDS_MODEL,
@@ -129,7 +131,7 @@ def add_word(text, word):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--friend", default="friend.jpg", help="photo shown for the 6-7 gesture")
-    parser.add_argument("--camera", type=int, default=0)
+    add_camera_args(parser)
     args = parser.parse_args()
 
     letters_model = joblib.load("model.joblib")
@@ -138,7 +140,8 @@ def main():
         print(f"No {WORDS_MODEL}: words mode is off. Run record_words.py and train_words.py")
     photo = load_photo(args.friend)
     detector = create_detector(video=True, num_hands=2)
-    cap = cv2.VideoCapture(args.camera)
+    cap = open_camera(args)
+    fps, window_open = FpsCounter(), False
 
     hand_tracker = HandTracker()
     trackers = {side: LetterTracker() for side in SIDES}
@@ -230,6 +233,11 @@ def main():
         if not hands:
             cv2.putText(frame, "No hands", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
+        cv2.putText(frame, f"{fps.tick():.0f} fps", (w - 100, h - 15), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6, (200, 200, 200), 1)
+        if not window_open:
+            open_window("SignVision", w, h)
+            window_open = True
         cv2.imshow("SignVision", frame)
         key = cv2.waitKey(1) & 0xFF
         if key in (ord("q"), 27):
