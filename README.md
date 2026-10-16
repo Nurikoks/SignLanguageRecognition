@@ -40,6 +40,18 @@ Put a photo named `friend.jpg` in this folder (or use `--friend path/to/photo.jp
 Hold both hands palms up and move them up and down in turns (one up, the other down):
 the photo appears for 3 seconds. Works in both modes, no training needed.
 
+## Camera
+By default the camera is asked for 640x480 at 60 fps and gives the most it can.
+The real fps is shown in the bottom right corner of the window. The window can be resized.
+```
+python webcam_demo.py --width 1280 --height 720 --fps 60
+```
+Many webcams give HD only at a low fps (10 to 15) and 60 fps not at all, so check the counter.
+MediaPipe makes the image smaller inside anyway, so a high fps helps more than a big image.
+In a dark room auto exposure makes the frames longer: fps drops (e.g. 30 to 15) and moving
+hands get blurry. Turn on the light, or set a short manual exposure: `--exposure -6`.
+`record_words.py` takes the same options.
+
 ## Demo keys
 M switch letters / words, SPACE add a space, BACKSPACE delete, C clear text, Q or Esc quit.
 
@@ -49,6 +61,7 @@ M switch letters / words, SPACE add a space, BACKSPACE delete, C clear text, Q o
 - `train.py` trains SVM and Random Forest, prints metrics, saves `model.joblib` and a confusion matrix
 - `webcam_demo.py` live demo: hold a sign for about 1.5 s (each hand on its own), the letter is
   shown and spoken; words mode; 6-7
+- `camera.py` opens the webcam with the wanted size and fps, fps counter
 - `gestures.py` features for movement gestures with two hands, and the 6-7 detector
 - `record_words.py` records word examples with the webcam to `data/words/<WORD>/`
 - `train_words.py` trains SVM and Random Forest on the words (cross-validation), saves `words_model.joblib`

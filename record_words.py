@@ -14,6 +14,7 @@ import time
 import cv2
 import numpy as np
 
+from camera import FpsCounter, add_camera_args, open_camera, open_window
 from features import HAND_COLORS, HandTracker, create_detector, detect_hands, draw_hand
 from gestures import RECORD_SECONDS, WORDS_DIR, to_arrays
 
@@ -24,7 +25,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("word", help="name of the word (Latin letters, e.g. HELLO)")
     parser.add_argument("--count", type=int, default=20, help="how many examples to record")
-    parser.add_argument("--camera", type=int, default=0)
+    add_camera_args(parser)
     args = parser.parse_args()
 
     folder = WORDS_DIR / args.word
@@ -33,7 +34,8 @@ def main():
     print(f"{args.word}: {before} examples already recorded")
 
     detector = create_detector(video=True, num_hands=2)
-    cap = cv2.VideoCapture(args.camera)
+    cap = open_camera(args)
+    fps, window_open = FpsCounter(), False
     tracker = HandTracker()
     state, state_since, frames, saved = "paused", 0.0, [], 0
     start, last_ts = time.time(), -1
@@ -84,6 +86,11 @@ def main():
         cv2.putText(frame, f"{args.word}: {saved}/{args.count}  (total {before + saved})",
                     (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
 
+        cv2.putText(frame, f"{fps.tick():.0f} fps", (w - 100, h - 15), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6, (200, 200, 200), 1)
+        if not window_open:
+            open_window("Record word", w, h)
+            window_open = True
         cv2.imshow("Record word", frame)
         key = cv2.waitKey(1) & 0xFF
         if key in (ord("q"), 27):
