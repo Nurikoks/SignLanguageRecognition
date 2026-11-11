@@ -2,7 +2,8 @@ data/
 *.csv
 *.joblib
 *.task
-confusion_matrix_svm.png
+*.pt
+confusion_matrix_*.png
 __pycache__/
 .venv/
 venv/
