@@ -10,17 +10,16 @@ We only have 24 letters, so the other 5 classes are never chosen.
 """
 import argparse
 
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from PIL import Image
-from sklearn.metrics import ConfusionMatrixDisplay, classification_report
+from sklearn.metrics import classification_report
 from torchvision import transforms as T
 from transformers import ViTForImageClassification
 
-from extract_features import find_class_folders
 from features import LETTERS
-from train_mobilenet import hand_boxes, list_images, report
+from results import save_predictions, test_images
+from train_mobilenet import hand_boxes, report
 
 MODEL = "dima806/asl_alphabet_image_detection"
 REVISION = "54f2be1101086e06a81f0301275b0ffae64bd165"   # the version we tested
@@ -33,8 +32,7 @@ def main():
     parser.add_argument("--boxes", default="hand_boxes.csv", help="cache of the hand boxes")
     args = parser.parse_args()
 
-    folders = find_class_folders(args.test)
-    items = [(f, i) for i, l in enumerate(LETTERS) for f in list_images(folders[l])]
+    items = [(f, LETTERS.index(l)) for f, l in test_images(args.test)]
     y = np.array([label for _, label in items])
     found = np.array([b is not None for b in hand_boxes([f for f, _ in items], args.boxes)])
 
@@ -63,13 +61,8 @@ def main():
     print("\nPer-letter report (external test, all images):")
     print(classification_report(y, pred, labels=labels, target_names=LETTERS, zero_division=0))
 
-    ConfusionMatrixDisplay.from_predictions(y, pred, labels=labels, display_labels=LETTERS,
-                                            cmap="Blues", colorbar=False)
-    plt.title("ViT (ready model) confusion matrix (external test)")
-    plt.gcf().set_size_inches(9, 9)
-    plt.tight_layout()
-    plt.savefig("confusion_matrix_vit.png", dpi=150)
-    print("Saved the confusion matrix to confusion_matrix_vit.png")
+    save_predictions("vit", [f for f, _ in items], [LETTERS[i] for i in y],
+                     [LETTERS[p] for p in pred])
 
 
 if __name__ == "__main__":

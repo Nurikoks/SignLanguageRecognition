@@ -18,7 +18,6 @@ in hand_boxes.csv, so MediaPipe runs over the images only once.
 import argparse
 import csv
 import random
-import re
 from pathlib import Path
 
 import numpy as np
@@ -29,9 +28,8 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from torchvision import models, transforms as T
 
-IMAGE_EXT = (".jpg", ".jpeg", ".png")
-BLOCK = 50        # frames in a row that stay on the same side of the split
-VAL_EVERY = 5     # every 5th block goes to validation (20%)
+from results import FIG_DIR, is_val, list_images, save_predictions, test_images
+
 MARGIN = 1.4      # the crop is 1.4 times the size of the hand
 MEAN, STD = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]   # ImageNet
 
@@ -54,10 +52,6 @@ class Images(Dataset):
             return self.transform(image), label
 
 
-def list_images(folder):
-    return sorted(f for f in folder.iterdir() if f.suffix.lower() in IMAGE_EXT)
-
-
 def split_blocks(folders, per_class=None):
     train, val = [], []
     rng = random.Random(42)
@@ -66,8 +60,7 @@ def split_blocks(folders, per_class=None):
         if per_class and len(files) > per_class:
             files = rng.sample(files, per_class)
         for f in files:
-            number = int(re.search(r"\d+", f.stem).group())
-            (val if (number // BLOCK) % VAL_EVERY == 0 else train).append((f, label))
+            (val if is_val(f) else train).append((f, label))
     return train, val
 
 
@@ -112,13 +105,41 @@ def hand_boxes(files, cache_path):
     return [cache[f.as_posix()] for f in files]
 
 
-def predict(model, loader, device):
+def predict(model, loader, device, loss_fn=None):
+    """Predicted class ids, and the mean loss if loss_fn is given."""
     model.eval()
-    pred = []
+    pred, total_loss = [], 0.0
     with torch.inference_mode():
-        for x, _ in loader:
-            pred.append(model(x.to(device)).argmax(1).cpu())
-    return torch.cat(pred).numpy() if pred else np.zeros(0, int)
+        for x, y in loader:
+            logits = model(x.to(device)).float()
+            if loss_fn is not None:
+                total_loss += loss_fn(logits, y.to(device)).item() * len(y)
+            pred.append(logits.argmax(1).cpu())
+    pred = torch.cat(pred).numpy() if pred else np.zeros(0, int)
+    return (pred, total_loss / max(len(pred), 1)) if loss_fn is not None else pred
+
+
+def plot_history(history, path, title):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    epochs = [h["epoch"] for h in history]
+    head = history[0]["head_epochs"]
+    fig, (a, b) = plt.subplots(1, 2, figsize=(11, 4.2))
+    a.plot(epochs, [h["train_loss"] for h in history], "o-", label="training")
+    a.plot(epochs, [h["val_loss"] for h in history], "o-", label="validation")
+    b.plot(epochs, [h["train_acc"] for h in history], "o-", label="training")
+    b.plot(epochs, [h["val_acc"] for h in history], "o-", label="validation")
+    for ax, name in ((a, "loss (cross-entropy, label smoothing 0.1)"), (b, "accuracy")):
+        ax.axvline(head + 0.5, color="gray", ls="--", lw=1, label="whole network from here")
+        ax.set_xlabel("epoch")
+        ax.set_ylabel(name)
+        ax.grid(alpha=0.3)
+        ax.legend()
+    fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
 
 
 def report(name, y, pred, labels):
@@ -136,7 +157,7 @@ def main():
     parser.add_argument("--head-epochs", type=int, default=2, help="only the last layer")
     parser.add_argument("--epochs", type=int, default=8, help="the whole network")
     parser.add_argument("--batch", type=int, default=64)
-    parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--per-class", type=int, default=None, help="fewer images, for a quick try")
     parser.add_argument("--out", default="mobilenet.pt")
     parser.add_argument("--eval-only", action="store_true",
@@ -144,9 +165,6 @@ def main():
     args = parser.parse_args()
 
     # imported here so the DataLoader workers do not have to load MediaPipe
-    import matplotlib.pyplot as plt
-    from sklearn.metrics import ConfusionMatrixDisplay
-
     from extract_features import find_class_folders
     from features import LETTERS
 
@@ -155,11 +173,10 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     folders = find_class_folders(args.train)
-    test_folders = find_class_folders(args.test)
-    if sorted(folders) != LETTERS or sorted(test_folders) != LETTERS:
-        raise SystemExit("Need a folder for each of the 24 letters in train and test data")
+    if sorted(folders) != LETTERS:
+        raise SystemExit("Need a folder for each of the 24 letters in the training data")
     train_items, val_items = split_blocks([folders[l] for l in LETTERS], args.per_class)
-    test_items = [(f, i) for i, l in enumerate(LETTERS) for f in list_images(test_folders[l])]
+    test_items = [(f, LETTERS.index(l)) for f, l in test_images(args.test)]
 
     # the test boxes are needed in both modes: results are also shown for "hand found" images
     test_boxes = hand_boxes([f for f, _ in test_items], args.boxes)
@@ -192,7 +209,11 @@ def main():
     options = dict(num_workers=args.workers, pin_memory=True, persistent_workers=args.workers > 0)
     train_loader = DataLoader(Images(train_items, train_tf), args.batch, shuffle=True,
                               drop_last=True, **options)
-    val_loader = DataLoader(Images(val_items, eval_tf), args.batch * 2, **options)
+    # On Windows every worker process loads PyTorch and CUDA again (several hundred MB of
+    # RAM each), so validation gets only 2 workers next to the training ones.
+    val_loader = DataLoader(Images(val_items, eval_tf), args.batch * 2,
+                            **{**options, "num_workers": min(args.workers, 2),
+                               "persistent_workers": args.workers > 0})
     y_val = np.array([label for _, label, _ in val_items])
     y_test = np.array([label for _, label, _ in test_items])
 
@@ -202,7 +223,8 @@ def main():
     loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
     scaler = torch.amp.GradScaler(device.type, enabled=device.type == "cuda")
 
-    best_f1 = -1.0
+    best_f1, history = -1.0, []
+    stem = Path(args.out).stem
     total = 0 if args.eval_only else args.head_epochs + args.epochs
     labels = list(range(len(LETTERS)))
     for epoch in range(total):
@@ -219,19 +241,24 @@ def main():
         model.train()
         if epoch < args.head_epochs:
             model.features.eval()    # do not change BatchNorm while the network is frozen
-        sum_loss = 0.0
+        sum_loss, correct, seen = 0.0, 0, 0
         for x, y in train_loader:
             x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(device.type, enabled=device.type == "cuda"):
-                loss = loss_fn(model(x), y)
+                logits = model(x)
+                loss = loss_fn(logits, y)
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
             scheduler.step()
             sum_loss += loss.item()
+            correct += (logits.argmax(1) == y).sum().item()
+            seen += len(y)
 
-        pred = predict(model, val_loader, device)
+        # training numbers: augmented images, while the weights change during the epoch;
+        # validation numbers: plain images, after the epoch
+        pred, val_loss = predict(model, val_loader, device, loss_fn)
         val_acc = accuracy_score(y_val, pred)
         val_f1 = f1_score(y_val, pred, labels=labels, average="macro", zero_division=0)
         saved = val_f1 > best_f1
@@ -239,9 +266,21 @@ def main():
             best_f1 = val_f1
             torch.save({"state_dict": model.state_dict(), "letters": LETTERS,
                         "crop_hand": args.crop_hand}, args.out)
-        print(f"Epoch {epoch + 1}/{total}  loss {sum_loss / len(train_loader):.3f}  "
-              f"val accuracy {val_acc:.3f}  val macro F1 {val_f1:.3f}" + ("  saved" if saved else ""),
+        history.append({"epoch": epoch + 1, "head_epochs": args.head_epochs,
+                        "train_loss": sum_loss / len(train_loader), "train_acc": correct / seen,
+                        "val_loss": val_loss, "val_acc": val_acc, "val_f1": val_f1,
+                        "saved": int(saved)})
+        print(f"Epoch {epoch + 1}/{total}  train loss {history[-1]['train_loss']:.3f}  "
+              f"train acc {history[-1]['train_acc']:.3f}  val loss {val_loss:.3f}  "
+              f"val acc {val_acc:.3f}  val macro F1 {val_f1:.3f}" + ("  saved" if saved else ""),
               flush=True)
+        FIG_DIR.mkdir(exist_ok=True)
+        with open(FIG_DIR / f"history_{stem}.csv", "w", newline="") as f:
+            writer = csv.DictWriter(f, history[0].keys())
+            writer.writeheader()
+            writer.writerows(history)
+        plot_history(history, FIG_DIR / f"learning_curve_{stem}.png",
+                     f"MobileNetV2 {'(hand crop)' if args.crop_hand else '(whole image)'} training")
 
     model.load_state_dict(torch.load(args.out, map_location=device)["state_dict"])
     # no worker processes here: each one loads the CUDA libraries again, and late in the run
@@ -258,18 +297,10 @@ def main():
     print("\nPer-letter report (external test, all images):")
     print(classification_report(y_test, test_pred, labels=labels, target_names=LETTERS,
                                 zero_division=0))
-
-    matrix = f"confusion_matrix_{Path(args.out).stem}.png"
-    ConfusionMatrixDisplay.from_predictions(y_test, test_pred, labels=labels,
-                                            display_labels=LETTERS, cmap="Blues", colorbar=False)
-    plt.title(f"MobileNetV2{' (hand crop)' if args.crop_hand else ''} confusion matrix "
-              "(external test)")
-    plt.gcf().set_size_inches(9, 9)
-    plt.tight_layout()
-    plt.savefig(matrix, dpi=150)
+    save_predictions(stem, [f for f, _, _ in test_items], [LETTERS[i] for i in y_test],
+                     [LETTERS[p] if p >= 0 else None for p in test_pred])
     if not args.eval_only:
-        print(f"Saved the best epoch to {args.out}")
-    print(f"Saved the confusion matrix to {matrix}")
+        print(f"Saved the best epoch to {args.out}, curves to {FIG_DIR}/learning_curve_{stem}.png")
 
 
 if __name__ == "__main__":

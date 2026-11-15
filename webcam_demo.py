@@ -1,7 +1,8 @@
 """Live demo with one or two hands.
 
 Letters mode: show an ASL letter with one or both hands and hold it for about 1.5 s.
-Words mode:   make a word gesture recorded with record_words.py (needs words_model.joblib).
+Words mode:   make one of the 25 ASL words from words.py (model from train_islr.py), then
+              lower your hands or hold them still: the 3 best guesses are shown.
 Both modes:   the 6-7 meme (both hands go up and down in turns) shows your friend's photo.
 
 Keys: M switch mode, SPACE add a space, BACKSPACE delete, C clear text, Q or Esc quit.
@@ -25,18 +26,17 @@ import numpy as np
 from camera import FpsCounter, add_camera_args, open_camera, open_window
 from features import (HAND_COLORS, SIDES, HandTracker, create_detector, detect_hands, draw_hand,
                       normalize)
-from gestures import (NOTHING, RECORD_SECONDS, SIX_SEVEN_SECONDS, WORDS_MODEL,
-                      FrameBuffer, is_six_seven, motion_amount, sequence_features)
+from gestures import SIX_SEVEN_SECONDS, FrameBuffer, is_six_seven
+from word_live import MIN_PROB as WORD_MIN_PROB
+from word_live import WORDS_NET, WordModel, WordRecorder, create_pose_detector, frame_array
 
 HOLD_SECONDS = 1.5   # how long a sign must be held
 AGREE = 0.7          # share of frames in that time that must give the same letter
 MIN_PROB = 0.5       # ignore frames where the model is unsure
 LOST_GRACE = 0.4     # a hand lost for less than this (blur) keeps its letter progress
 
-WORD_MIN_PROB = 0.7  # the word model must be at least this sure...
-WORD_STREAK = 3      # ...for this many frames in a row
-WORD_PAUSE = 1.0     # seconds before the next word can be recognized
-MIN_MOTION = 0.4     # hands must move at least this much (in hand sizes) to make a word
+GUESS_SECONDS = 3.0  # how long the word guesses stay on screen
+WORD_NAMES = {"thankyou": "thank you"}
 
 PHOTO_SECONDS = 3.0  # how long the 6-7 photo stays on screen
 
@@ -128,6 +128,18 @@ def add_word(text, word):
     return text + ("" if not text or text.endswith(" ") else " ") + word + " "
 
 
+def draw_word_guesses(frame, guesses, recording):
+    h = frame.shape[0]
+    if recording:
+        cv2.circle(frame, (30, h - 30), 10, (0, 0, 255), -1)
+        cv2.putText(frame, "recording", (50, h - 22), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                    (0, 0, 255), 2)
+    for i, (word, prob) in enumerate(guesses):
+        color = (0, 220, 0) if i == 0 and prob >= WORD_MIN_PROB else (255, 255, 255)
+        cv2.putText(frame, f"{i + 1}. {WORD_NAMES.get(word, word)}  {prob:.0%}",
+                    (20, 120 + 32 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--friend", default="friend.jpg", help="photo shown for the 6-7 gesture")
@@ -135,9 +147,11 @@ def main():
     args = parser.parse_args()
 
     letters_model = joblib.load("model.joblib")
-    words_model = joblib.load(WORDS_MODEL) if Path(WORDS_MODEL).exists() else None
+    words_model = WordModel() if Path(WORDS_NET).exists() else None
     if words_model is None:
-        print(f"No {WORDS_MODEL}: words mode is off. Run record_words.py and train_words.py")
+        print(f"No {WORDS_NET}: words mode is off. Run islr_prepare.py and train_islr.py")
+    pose_detector = create_pose_detector() if words_model is not None else None
+    recorder, guesses, guesses_until = WordRecorder(), [], 0.0
     photo = load_photo(args.friend)
     detector = create_detector(video=True, num_hands=2)
     cap = open_camera(args)
@@ -146,9 +160,8 @@ def main():
     hand_tracker = HandTracker()
     trackers = {side: LetterTracker() for side in SIDES}
     last_seen = {side: 0.0 for side in SIDES}
-    frames = FrameBuffer(max(RECORD_SECONDS, SIX_SEVEN_SECONDS))
+    frames = FrameBuffer(SIX_SEVEN_SECONDS)
     mode, text = "letters", ""
-    word, word_prob, last_word, streak, word_ready = None, 0.0, None, 0, 0.0
     six_seven_since = -PHOTO_SECONDS
     start, last_ts = time.time(), -1
 
@@ -160,7 +173,8 @@ def main():
         now = time.time()
         ts = max(int((now - start) * 1000), last_ts + 1)   # must always increase
         last_ts = ts
-        hands = detect_hands(detector, cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), ts, hand_tracker)
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        hands = detect_hands(detector, rgb, ts, hand_tracker)
         frames.add(now, hands)
         for side in hands:
             last_seen[side] = now
@@ -192,34 +206,18 @@ def main():
                     speech.put(confirmed)
                 draw_letter_guess(frame, hands[side], candidate, progress)
 
-        # ---------- words: the last RECORD_SECONDS of movement ----------
+        # ---------- words: record from the first hand until the hands go down ----------
         if mode == "words" and not showing_photo and words_model is not None:
-            word, word_prob = None, 0.0
-            t, points, present = frames.last(RECORD_SECONDS)
-            if (now >= word_ready and len(t) and t[-1] - t[0] >= 0.9 * RECORD_SECONDS
-                    and motion_amount(points, present) >= MIN_MOTION):
-                x = sequence_features(points, present)
-                if x is not None:
-                    probs = words_model.predict_proba([x])[0]
-                    word, word_prob = words_model.classes_[probs.argmax()], probs.max()
-            if word and word != NOTHING and word_prob >= WORD_MIN_PROB:
-                streak = streak + 1 if word == last_word else 1
-            else:
-                streak = 0
-            last_word = word
-            if streak >= WORD_STREAK:
-                text = add_word(text, word)
-                speech.put(word)
-                frames.clear()
-                word_ready, streak = now + WORD_PAUSE, 0
-            if word and word != NOTHING:
-                cv2.putText(frame, f"guess: {word} {word_prob:.2f}", (20, h - 25),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-            if now < word_ready:
-                cv2.putText(frame, "got it!", (20, h - 25), cv2.FONT_HERSHEY_SIMPLEX,
-                            0.8, (0, 200, 0), 2)
+            clip = recorder.add(now, frame_array(pose_detector, rgb, ts, hands))
+            if clip is not None:
+                guesses, guesses_until = words_model.top(clip, aspect=h / w), now + GUESS_SECONDS
+                if guesses and guesses[0][1] >= WORD_MIN_PROB:
+                    word = WORD_NAMES.get(guesses[0][0], guesses[0][0])
+                    text = add_word(text, word)
+                    speech.put(word)
+            draw_word_guesses(frame, guesses if now < guesses_until else [], recorder.recording)
         elif mode == "words" and words_model is None:
-            cv2.putText(frame, "no words model: run record_words.py, train_words.py",
+            cv2.putText(frame, "no words model: run islr_prepare.py, train_islr.py",
                         (20, h - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
         if showing_photo:
@@ -245,7 +243,7 @@ def main():
         if key == ord("m"):
             mode = "words" if mode == "letters" else "letters"
             frames.clear()
-            streak = 0
+            recorder.reset()
             for tracker in trackers.values():
                 tracker.reset()
         elif key == ord(" "):

@@ -1,25 +1,15 @@
-"""Gestures with movement and two hands: features for word recognition and the 6-7 detector.
+"""The 6-7 detector: a buffer of the last webcam frames and the check on it.
+(Words are recognized by word_live.py with the model from train_islr.py.)
 
-A recording is a few seconds of webcam frames, stored as arrays:
+The buffer keeps a few seconds of frames as arrays:
   points  T x 2 x 21 x 3   landmarks in pixels (hand 0 = Left, hand 1 = Right)
   present T x 2            True where that hand was found in that frame
 """
 from collections import deque
-from pathlib import Path
 
 import numpy as np
 
-from features import PALM, SIDES, hand_size, normalize
-
-WORDS_DIR = Path("data/words")
-WORDS_MODEL = "words_model.joblib"
-NOTHING = "nothing"      # optional class: random moves that are not a word, never shown
-
-RECORD_SECONDS = 2.0     # length of one word example (and of the live window)
-TRAJ_STEPS = 16          # the wrist path is resampled to this many points
-SHAPE_STEPS = 4          # the hand shape is averaged over this many parts of the gesture
-MIN_FRAMES = 8
-MIN_PRESENT = 0.3        # a hand seen in fewer frames than this counts as not used
+from features import PALM, SIDES, hand_size
 
 SIX_SEVEN_SECONDS = 1.5  # window for the 6-7 detector
 
@@ -57,67 +47,6 @@ class FrameBuffer:
         end = self.frames[-1][0]
         t, points, present = zip(*[f for f in self.frames if end - f[0] <= seconds])
         return np.array(t), np.stack(points), np.stack(present)
-
-
-def _fill_gaps(points, present):
-    """Where a hand was lost for a few frames, copy the nearest frame where it was seen."""
-    points = points.copy()
-    used = present.mean(axis=0) >= MIN_PRESENT
-    for s in range(2):
-        if not used[s]:
-            points[:, s] = 0
-            continue
-        seen = np.flatnonzero(present[:, s])
-        for i in np.flatnonzero(~present[:, s]):
-            points[i, s] = points[seen[np.abs(seen - i).argmin()], s]
-    return points, used
-
-
-def sequence_features(points, present):
-    """Turn a recording into one fixed-size vector (or None if there are no hands):
-    which hands are used, the path of each wrist, the vector between the wrists,
-    and the hand shapes in SHAPE_STEPS parts of the gesture."""
-    if len(points) < MIN_FRAMES:
-        return None
-    points, used = _fill_gaps(points, present)
-    if not used.any():
-        return None
-    T = len(points)
-    scale = np.mean([hand_size(points[i, s]) for i in range(T) for s in range(2) if used[s]])
-    if scale <= 0:
-        return None
-
-    idx = np.linspace(0, T - 1, TRAJ_STEPS).round().astype(int)
-    wrists = points[:, :, 0, :2]
-    feats = [used.astype(np.float32)]
-    for s in range(2):
-        # path around the hand's average position, in hand sizes, so it does not
-        # depend on where you stand or how far you are from the camera
-        path = (wrists[idx, s] - wrists[:, s].mean(axis=0)) / scale
-        feats.append(path.ravel() if used[s] else np.zeros(TRAJ_STEPS * 2))
-    between = (wrists[idx, 1] - wrists[idx, 0]) / scale
-    feats.append(between.ravel() if used.all() else np.zeros(TRAJ_STEPS * 2))
-    for s, side in enumerate(SIDES):
-        for part in np.array_split(np.arange(T), SHAPE_STEPS):
-            if used[s]:
-                feats.append(np.mean([normalize(points[i, s], side) for i in part], axis=0))
-            else:
-                feats.append(np.zeros(63))
-    return np.concatenate(feats).astype(np.float32)
-
-
-def motion_amount(points, present):
-    """How far the most moving wrist traveled, in hand sizes (about 0 for a still hand).
-    Uses the size of the area the wrist covered, so camera jitter does not add up."""
-    best = 0.0
-    for s in range(2):
-        seen = np.flatnonzero(present[:, s])
-        if len(seen) < 2:
-            continue
-        scale = np.mean([hand_size(points[i, s]) for i in seen])
-        if scale > 0:
-            best = max(best, np.linalg.norm(np.ptp(points[seen, s, 0, :2], axis=0)) / scale)
-    return best
 
 
 def _moves(y, step):

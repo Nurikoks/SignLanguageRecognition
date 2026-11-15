@@ -1,10 +1,26 @@
+# data and trained models (too big for GitHub, made by the scripts)
 data/
-*.csv
 *.joblib
 *.task
 *.pt
-confusion_matrix_*.png
+*.npz
+*.csv
+old_results/
+word_examples/
+
+# results are small and let anyone recompute the metrics: keep them
+!figures/*.csv
+!predictions/*.csv
+!predictions_words/*.csv
+
+# logs of training runs
+logs_*.txt
+
 __pycache__/
+.ipynb_checkpoints/
 .venv/
 venv/
 friend.*
+
+# notebook exports (made by make_notebook.py --pdf)
+SignVision.html
