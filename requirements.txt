@@ -6,3 +6,8 @@ scikit-learn
 matplotlib
 joblib
 pyttsx3
+torch
+torchvision
+transformers
+safetensors
+python-docx
