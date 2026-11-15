@@ -24,3 +24,6 @@ friend.*
 
 # notebook exports (made by make_notebook.py --pdf)
 SignVision.html
+
+# lock files of open Word documents
+~$*
